@@ -4,7 +4,7 @@
 
 <#
 .Synopsis
-Output Debloater for the ARK Dev Kit (v2.1) - A_Banana#2877
+Output Debloater for the ARK Dev Kit (v3.0) - A_Banana#2877
 
 .Description
 Removes any directories found in \ModTools\Output\[ModDirName]\WindowsNoEditor\ and .\ModTools\Output\[ModDirName]\LinuxNoEditor\ which are not contained in [EditorDirectory]\Projects\ShooterGame\Content\Mods\[ModDirName]\
@@ -19,11 +19,8 @@ The name of the mod directory. Do not pass a full path. (i.e. pass "ExampleMod" 
 .Parameter EditorDirectory
 The path to the dev kit's directory. Defaults to the script's location if omitted.
 
-.Parameter ExcludeDirsFile
-The path to the file containing directories which should be untouched by this script. Takes precedence over -ExcludeDirs
-
-.Parameter ExcludeDirs
-An array of directories which should be untouched by this script.
+.Parameter IgnoreDirsFile
+The path to the file containing directories which should be untouched by this script.
 
 .Parameter WhatIf
 Tells you which directories it would remove and exits. This overrides -Silent.
