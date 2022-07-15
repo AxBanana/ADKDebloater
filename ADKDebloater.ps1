@@ -4,82 +4,115 @@
 
 <#
 .Synopsis
-Output Debloater for the ARK Editor (Version 1.0) - A_Banana#2877
+Output Debloater for the ARK Dev Kit (Version 2.0) - A_Banana#2877
 
 .Description
-Removes any directories found in .\ModTools\Output\ModDirName\WindowsNoEditor\ and .\ModTools\Output\ModDirName\LinuxNoEditor\ which are not contained in .\Projects\ShooterGame\Content\Mods\ModDirName\
+Removes any directories found in \ModTools\Output\[ModDirName]\WindowsNoEditor\ and .\ModTools\Output\[ModDirName]\LinuxNoEditor\ which are not contained in [EditorDirectory]\Projects\ShooterGame\Content\Mods\[ModDirName]\
 
-This script must be placed under \ARKEditor to work. (that is, the same directory as ARKDevKit.bat, or /Game/../../../ in UE4 terms)
-The switch -Silent implies -NoConfirmation.
+This script may be placed under \ARKEditor (that is, the same directory as ARKDevKit.bat, or /Game/../../../ in UE4 terms), or you can pass the directory with -EditorDirectory.
 
 You may need to check "Change execution policy to allow local PowerShell scripts to run without signing" in Windows settings.
 
 .Parameter ModDirName
 The name of the mod directory. Do not pass a full path. (i.e. pass "ExampleMod" rather than "/Content/Mods/ExampleMod")
+
+.Parameter EditorDirectory
+The path to the dev kit's directory. Defaults to the script's location if omitted.
+
+.Parameter DryRun
+Tells you which directories it would remove and exits. This overrides -Silent.
+
+.Parameter NoConfirmation
+Omits the confirmation dialog. Take caution when using this option.
+
+.Parameter Silent
+Executes silently. Note that this implies -NoConfirmation.
 #>
 
+#Requires -Version 5.1
 
 Param(
-    [Parameter(Position=1)][string]$ModDirName,
+    [Parameter(Position=1, Mandatory=$true)][string]$ModDirName,
+    [Parameter()][string]$EditorDirectory = "$PSScriptRoot",
+    [switch]$DryRun,
     [switch]$NoConfirmation,
     [switch]$Silent
 )
 
 
+# Get path to the sources directory
+$ModSourceDir = Join-Path "$EditorDirectory" -ChildPath Projects | Join-Path -ChildPath ShooterGame | Join-Path -ChildPath Content | Join-Path -ChildPath Mods | Join-Path -ChildPath "$ModDirName"
 
-$ModSourceDir = "$PSScriptRoot\Projects\ShooterGame\Content\Mods\$ModDirName"
-$ModOutputDir = "$PSScriptRoot\ModTools\Output\$ModDirName"
-
-function Get-BloatDirs([string]$DirName) {
-    $LocalDirsToRemove = @()
-
-    $PlatformDir = "$ModOutputDir\$DirName"
-
-    Get-ChildItem -Path $PlatformDir | ForEach {
-        
-        if ($_.PSIsContainer) {
-            $EndDirName = Split-Path $_ -Leaf
-            $FullPath = "$ModSourceDir\$EndDirName"
-            if (-Not (Test-Path -Path $FullPath)) {
-                $LocalDirsToRemove += "$PlatformDir\$_"
-            }
-        }
-    }
-    return $LocalDirsToRemove
-}
+# Get path to the output directory
+$ModOutputDir = Join-Path "$EditorDirectory" -ChildPath ModTools | Join-Path -ChildPath Output | Join-Path -ChildPath "$ModDirName"
 
 function Write-Host-If-Verbose([string]$Text) {
-    if (-Not $Silent) {
+    if ($DryRun -or (-Not $Silent)) {
         Write-Host $Text
     }
 }
 
-
-
-if (-Not (Test-Path $ModSourceDir)) {
+if (-Not (Test-Path "$ModSourceDir")) {
     Write-Host-If-Verbose "Missing mod sources directory. Did you misplace this script?"
     exit
 }
 
-if (-Not (Test-Path $ModOutputDir)) {
+if (-Not (Test-Path "$ModOutputDir")) {
     Write-Host-If-Verbose "Missing mod output directory. Either the script was misplaced or the mod needs to be cooked."
     exit
 }
 
+function Get-Bloat-Dirs([string]$PlatformName) {
+    $LocalDirsToRemove = @()
+
+    # Get path to the platform directory (WindowsNoEditor or LinuxNoEditor)
+    $PlatformDir = Join-Path "$ModOutputDir" "$PlatformName"
+
+    if (Test-Path "$PlatformDir") {
+        Get-ChildItem -Path "$PlatformDir" -Directory | ForEach {
+            
+            # Get the directory name (only the final path segment)
+            $DirName = Split-Path $_ -Leaf
+
+            # Get the path to the directory in sources
+            $FullPath = Join-Path "$ModSourceDir" "$DirName"
+            
+            #
+            if (-Not (Test-Path "$FullPath")) {
+                $LocalDirsToRemove += Join-Path "$PlatformDir" "$_"
+            }
+            
+        }
+    }
+    
+    return $LocalDirsToRemove
+}
+
 $DirsToRemove = @()
 
-$DirsToRemove += Get-BloatDirs "WindowsNoEditor"
-$DirsToRemove += Get-BloatDirs "LinuxNoEditor"
+$DirsToRemove += Get-Bloat-Dirs "WindowsNoEditor"
+$DirsToRemove += Get-Bloat-Dirs "LinuxNoEditor"
 
 if ($DirsToRemove.Length -eq 0) {
     Write-Host-If-Verbose "No bloat directories detected, exiting."
     exit
 }
 
-Write-Host-If-Verbose "This script will delete the following directories:"
+if ($DryRun) {
+    Write-Host "This script would delete the following directories:"
+} else {
+    Write-Host-If-Verbose "This script will delete the following directories:"
+}
+
 Write-Host-If-Verbose ""
-if (-Not $Silent) {
+if ($DryRun -or (-Not $Silent)) {
     Write-Host $DirsToRemove -Separator "`r`n"
+}
+
+if ($DryRun) {
+    Write-Host
+    Write-Host "Exiting..."
+    exit
 }
 
 if (-Not ($Silent -or $NoConfirmation)) {
@@ -108,3 +141,4 @@ $DirsToRemove | ForEach {
 }
 
 Write-Host-If-Verbose "Directories removed."
+Write-Host-If-Verbose "Exiting..."
