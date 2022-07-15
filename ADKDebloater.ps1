@@ -19,7 +19,13 @@ The name of the mod directory. Do not pass a full path. (i.e. pass "ExampleMod" 
 .Parameter EditorDirectory
 The path to the dev kit's directory. Defaults to the script's location if omitted.
 
-.Parameter DryRun
+.Parameter ExcludeDirsFile
+The path to the file containing directories which should be untouched by this script. Takes precedence over -ExcludeDirs
+
+.Parameter ExcludeDirs
+An array of directories which should be untouched by this script.
+
+.Parameter WhatIf
 Tells you which directories it would remove and exits. This overrides -Silent.
 
 .Parameter NoConfirmation
@@ -32,103 +38,169 @@ Executes silently. Note that this implies -NoConfirmation.
 #Requires -Version 5.1
 
 Param(
-    [Parameter(Position=1, Mandatory=$true)][string]$ModDirName,
-    [string]$EditorDirectory = "$PSScriptRoot",
-    [switch]$DryRun,
-    [switch]$NoConfirmation,
-    [switch]$Silent
+    [Alias("ModName", "Mod", "M")][Parameter(Position=1, Mandatory=$true)][string]$ModDirName,
+    [Alias("Directory", "D")][string]$EditorDirectory = $PSScriptRoot,
+    [Alias("IgnoreFile", "I")][string]$IgnoreDirsFile,
+    [Alias("DryRun", "W")][switch]$WhatIf,
+    [Alias("NoConfirm", "NC")][switch]$NoConfirmation,
+    [Alias("S")][switch]$Silent
 )
 
 # Get path to the sources directory
-$ModSourceDir = Join-Path "$EditorDirectory" -ChildPath Projects | Join-Path -ChildPath ShooterGame | Join-Path -ChildPath Content | Join-Path -ChildPath Mods | Join-Path -ChildPath "$ModDirName"
+$ModSourceDir = Join-Path $EditorDirectory -ChildPath Projects | Join-Path -ChildPath ShooterGame | Join-Path -ChildPath Content | Join-Path -ChildPath Mods | Join-Path -ChildPath $ModDirName
 
 # Get path to the output directory
-$ModOutputDir = Join-Path "$EditorDirectory" -ChildPath ModTools | Join-Path -ChildPath Output | Join-Path -ChildPath "$ModDirName"
+$ModOutputDir = Join-Path $EditorDirectory -ChildPath ModTools | Join-Path -ChildPath Output | Join-Path -ChildPath $ModDirName
 
 # Function to only write to output if we are doing a dry run or we're not silent.
-function Write-Host-If-Verbose([string]$Text) {
-    if ($DryRun -or (-Not $Silent)) {
-        Write-Host $Text
+function Write-Host-If-Verbose([string]$Text="", [System.ConsoleColor]$ForegroundColor= [System.Console]::ForegroundColor) {
+    if ($WhatIf -or (-not $Silent)) {
+        Write-Host $Text -ForegroundColor $ForegroundColor
     }
 }
 
 # Does the mod source directory exist?
-if (-Not (Test-Path "$ModSourceDir")) {
-    Write-Host-If-Verbose "Missing mod sources directory. Did you misplace this script?"
+if (-not (Test-Path $ModSourceDir)) {
+    Write-Host-If-Verbose "Missing mod sources directory."
     exit
 }
 
 # Does the output directory exist?
-if (-Not (Test-Path "$ModOutputDir")) {
-    Write-Host-If-Verbose "Missing mod output directory. Either the script was misplaced or the mod needs to be cooked."
+if (-not (Test-Path $ModOutputDir)) {
+    Write-Host-If-Verbose "Missing mod output directory."
     exit
+}
+
+$IgnoreDirs = $null
+
+# Were we given an ignore file?
+if (-not [string]::IsNullOrWhiteSpace($IgnoreDirsFile)) {
+
+    # Does the file have a valid section for the mod?
+    if ("$(Get-Content $IgnoreDirsFile)" -match "#$ModDirName(.*)#$ModDirName") {
+
+        # Save the ignores
+        $IgnoreDirs = $Matches[1].Trim() -split " " -match "\S+"
+
+        # If we're outputting stuff
+        if ($WhatIf -or (-not $Silent)) {
+            if ($IgnoreDirs.Length -gt 0) {
+                $ForEachArgs = @{
+                    Process = { Write-Host $_ -ForegroundColor White }
+                    Begin = { Write-Host "`r`nThe following directories to ignore were found in file $IgnoreDirsFile`:`r`n" -ForegroundColor Blue }
+                    End = { Write-Host }
+                }
+                $IgnoreDirs | ForEach @ForEachArgs
+            } else {
+                Write-Host "No directories to ignore were found in file $IgnoreDirsFile."
+            }
+            
+        }
+    }
+}
+
+function Get-Removable-Dirs([string]$Directory, [string]$OutputDirectory) {
+
+    foreach ($IgnoreDir in $IgnoreDirs) {
+        if ([string]::Equals((Join-Path $OutputDirectory $IgnoreDir).TrimEnd("\"), $Directory.TrimEnd("\"), [System.StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+    }
+    
+    $RemovableDirs = @()
+
+    # Get path of Directory relative to OutputDirectory
+    $RelativeDirectoryPath = $Directory.Substring($Directory.IndexOf($OutputDirectory) + $OutputDirectory.Length)
+    
+    # Get the corresponding sources directory
+    $SourceDirectory = Join-Path $ModSourceDir $RelativeDirectoryPath
+
+    Write-Host-If-Verbose "Searching for bloat directories in: $Directory" -ForegroundColor Yellow
+
+    # Get subdirectories
+    Get-ChildItem -Path $Directory -Directory | ForEach {
+        
+        $IndividualDir = $_
+        
+        $DirName = $IndividualDir.BaseName
+
+        # Get this directory's corresponding directory in sources
+        $DirSource = Join-Path $SourceDirectory $DirName
+
+        # Does it exist?
+        if (-not (Test-Path $DirSource)) {
+            $FoundDir = $false
+
+            # Check the ignored directories
+            foreach ($IgnoreDir in $IgnoreDirs) {
+                # Is this directory a subdirectory?
+                if ((Join-Path $OutputDirectory $IgnoreDir).ToLower().StartsWith($IndividualDir.FullName.ToLower())) {
+                    $FoundDir = $true
+                    break
+                }
+            }
+            # Did we get a match?
+            if ($FoundDir) {
+                # Check the subdirectories
+                $RemovableDirs += Get-Removable-Dirs $IndividualDir.FullName $OutputDirectory
+            } else {
+                Write-Host-If-Verbose "Found bloat directory: $($IndividualDir.FullName)" -ForegroundColor DarkYellow
+                # This directory should be removed since it is not being ignored
+                $RemovableDirs += $IndividualDir.FullName
+            }
+        }
+    }
+    return $RemovableDirs
 }
 
 function Get-Bloat-Dirs([string]$PlatformName) {
     $LocalDirsToRemove = @()
 
     # Get path to the platform directory (WindowsNoEditor or LinuxNoEditor)
-    $PlatformDir = Join-Path "$ModOutputDir" "$PlatformName"
+    $PlatformDir = Join-Path $ModOutputDir $PlatformName
 
-    # Does the platform directory exist?
-    if (Test-Path "$PlatformDir") {
-        
-        # Get all child directories
-        Get-ChildItem -Path "$PlatformDir" -Directory | ForEach {
-            
-            # Get the directory name (only the final path segment)
-            $DirName = Split-Path $_ -Leaf
-
-            # Get the path to the directory in sources
-            $FullPath = Join-Path "$ModSourceDir" "$DirName"
-            
-            # Check if path exists
-            if (-Not (Test-Path "$FullPath")) {
-                $LocalDirsToRemove += Join-Path "$PlatformDir" "$_"
-            }
-        }
-    }
+    # Get the directories we should remove
+    $LocalDirsToRemove += Get-Removable-Dirs $PlatformDir $PlatformDir
     
     return $LocalDirsToRemove
 }
 
 $DirsToRemove = @()
 
-# Find directories we want to remove
+# Find directories we want to remove for each platform
 $DirsToRemove += Get-Bloat-Dirs "WindowsNoEditor"
 $DirsToRemove += Get-Bloat-Dirs "LinuxNoEditor"
 
+Write-Host-If-Verbose
+
 # Exit if we didn't find any directories
 if ($DirsToRemove.Length -eq 0) {
-    Write-Host-If-Verbose "No bloat directories detected, exiting."
+    Write-Host-If-Verbose "No bloat directories found, exiting." -ForegroundColor Green
     exit
 }
 
 # Dry run won't actually do it
-if ($DryRun) {
-    Write-Host "This script would delete the following directories:"
+if ($WhatIf) {
+    Write-Host "This script would remove the following directories:" -ForegroundColor Blue
 } else {
-    Write-Host-If-Verbose "This script will delete the following directories:"
+    Write-Host-If-Verbose "This script will remove the following directories:" -ForegroundColor Blue
 }
 
-Write-Host-If-Verbose ""
-
 # Only write if it's a dry run or verbose
-if ($DryRun -or (-Not $Silent)) {
-    Write-Host $DirsToRemove -Separator "`r`n"
+if ($WhatIf -or (-not $Silent)) {
+    Write-Host
+    Write-Host $DirsToRemove -Separator "`r`n" -ForegroundColor White
 }
 
 # Exit if we're doing a dry run
-if ($DryRun) {
-    Write-Host
-    Write-Host "Exiting..."
+if ($WhatIf) {
+    Write-Host "`r`nExiting..." -ForegroundColor Green
     exit
 }
 
 # Confirm removal of directories
-if (-Not ($Silent -or $NoConfirmation)) {
-    Write-Host
-    $Ret = Read-Host "Proceed? (y/n)"
+if (-not ($Silent -or $NoConfirmation)) {
+    $Ret = Read-Host "`r`nProceed? (y/n)"
     switch ($Ret) {
         "y" {
             break
@@ -138,19 +210,19 @@ if (-Not ($Silent -or $NoConfirmation)) {
             exit
         }
         default {
-            Write-Host "Invalid input, exiting..."
+            Write-Host "Invalid input, exiting..." -ForegroundColor Red
             exit
         }
     }
 }
 
-Write-Host-If-Verbose "Removing directories..."
+Write-Host-If-Verbose "Removing directories..." -ForegroundColor Green
 
 # Remove directories
 $DirsToRemove | ForEach {
-    Remove-Item -Recurse "$_"
-    Write-Host-If-Verbose "Removed $_"
+    Remove-Item -Recurse $_
+    Write-Host-If-Verbose "Removed $_" -ForegroundColor Yellow
 }
 
-Write-Host-If-Verbose "Directories removed."
+Write-Host-If-Verbose "Directories removed." -ForegroundColor Green
 Write-Host-If-Verbose "Exiting..."
